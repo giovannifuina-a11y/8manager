@@ -3192,9 +3192,9 @@ document.addEventListener('DOMContentLoaded',()=>{
  const h=document.querySelector('header')||document.body;
  const card=document.createElement('div');
  card.style.cssText='background:#fff;margin:12px;padding:12px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.15)';
- const db=JSON.parse(localStorage.getItem('coreDB')||'{}');
- const sessions=((db.sessions)||[]).length;
- const cats=((db.catalogs)||[]).length;
+ const db=JSON.parse(localStorage.getItem('8manager-core-db-v1')||'{}');
+ const sessions=Array.isArray(db.sessions)?db.sessions.length:Object.keys(db.sessions||{}).length;
+ const cats=Array.isArray(db.catalogs)?db.catalogs.length:Object.keys(db.catalogs||{}).length;
  card.innerHTML='<h3>Dashboard</h3><p>Sessioni: '+sessions+'<br>Cataloghi: '+cats+'<br>Backup automatico: attivo (alla chiusura sessione nella prossima release completa)</p>';
  h.after(card);
 });
@@ -3209,7 +3209,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 </style>
 <div id="cloudSyncCard">
   <div>
-    <div class="cloud-title">☁️ Sincronizzazione cloud</div>
+    <div class="cloud-title">☁️ Sincronizzazione cloud · v6.2.1</div>
     <div id="cloudSyncStatus" class="cloud-meta">Connessione a Firebase…</div>
   </div>
   <div id="cloudSyncActions">
@@ -3238,7 +3238,7 @@ const db = getFirestore(app);
 const provider = new GoogleAuthProvider();
 provider.setCustomParameters({ prompt: "select_account" });
 
-const CORE_KEY = "coreDB";
+const CORE_KEY = "8manager-core-db-v1";
 const statusEl = document.getElementById("cloudSyncStatus");
 const loginBtn = document.getElementById("cloudLoginButton");
 const logoutBtn = document.getElementById("cloudLogoutButton");
