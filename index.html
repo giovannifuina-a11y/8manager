@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>8Manager — Milestone 4.1 Motore Export Ufficiale</title>
+<title>8Manager — Versione 6.2 Cloud</title>
 <style>
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -3199,5 +3199,164 @@ document.addEventListener('DOMContentLoaded',()=>{
  h.after(card);
 });
 </script>
+
+<!-- 8Manager Cloud Sync v6.2 -->
+<style>
+#cloudSyncCard{max-width:980px;margin:12px auto;padding:14px 16px;background:#fff;border-radius:14px;box-shadow:0 3px 16px #00000012;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+#cloudSyncCard .cloud-title{font-weight:900;color:#173a59}.cloud-meta{font-size:13px;color:#607080;margin-top:3px}
+#cloudSyncActions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}#cloudSyncActions button{width:auto;padding:9px 12px}
+@media(max-width:680px){#cloudSyncCard{grid-template-columns:1fr}#cloudSyncActions{justify-content:stretch}#cloudSyncActions button{flex:1}}
+</style>
+<div id="cloudSyncCard">
+  <div>
+    <div class="cloud-title">☁️ Sincronizzazione cloud</div>
+    <div id="cloudSyncStatus" class="cloud-meta">Connessione a Firebase…</div>
+  </div>
+  <div id="cloudSyncActions">
+    <button id="cloudLoginButton" class="primary">Accedi con Google</button>
+    <button id="cloudSyncNowButton" class="success hidden">Sincronizza ora</button>
+    <button id="cloudLogoutButton" class="hidden">Esci</button>
+  </div>
+</div>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC744nNVr08X1UXV0IZ_ycSA0JXUxCRVFE",
+  authDomain: "manager-f76a2.firebaseapp.com",
+  projectId: "manager-f76a2",
+  storageBucket: "manager-f76a2.firebasestorage.app",
+  messagingSenderId: "942635146015",
+  appId: "1:942635146015:web:1ce78a73a6988d1769ae2a"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const provider = new GoogleAuthProvider();
+provider.setCustomParameters({ prompt: "select_account" });
+
+const CORE_KEY = "coreDB";
+const statusEl = document.getElementById("cloudSyncStatus");
+const loginBtn = document.getElementById("cloudLoginButton");
+const logoutBtn = document.getElementById("cloudLogoutButton");
+const syncBtn = document.getElementById("cloudSyncNowButton");
+let currentUser = null;
+let unsubscribeSnapshot = null;
+let uploadTimer = null;
+let applyingRemote = false;
+let lastUploadedUpdatedAt = null;
+
+function setStatus(text){ statusEl.textContent = text; }
+function readLocal(){
+  try { return JSON.parse(localStorage.getItem(CORE_KEY) || "null"); }
+  catch { return null; }
+}
+function localTime(payload){ return Date.parse(payload?.updatedAt || 0) || 0; }
+function dataRef(user){ return doc(db, "users", user.uid, "app", "state"); }
+
+async function uploadLocal(reason="automatico"){
+  if(!currentUser || applyingRemote) return;
+  const payload = readLocal();
+  if(!payload) return;
+  const bytes = new Blob([JSON.stringify(payload)]).size;
+  if(bytes > 900000){
+    setStatus("Sincronizzazione sospesa: database locale troppo grande (oltre 900 KB).");
+    return;
+  }
+  setStatus("Salvataggio cloud in corso…");
+  await setDoc(dataRef(currentUser), {
+    payload,
+    schemaVersion: payload.schemaVersion || 1,
+    updatedAt: payload.updatedAt || new Date().toISOString(),
+    updatedBy: currentUser.email || currentUser.uid,
+    serverUpdatedAt: serverTimestamp()
+  });
+  lastUploadedUpdatedAt = payload.updatedAt || null;
+  setStatus(`Sincronizzato (${reason}) · ${new Date().toLocaleTimeString("it-IT")}`);
+}
+
+function scheduleUpload(){
+  if(!currentUser || applyingRemote) return;
+  clearTimeout(uploadTimer);
+  uploadTimer = setTimeout(() => uploadLocal("automatico").catch(err => {
+    console.error(err); setStatus("Errore di sincronizzazione: " + (err.message || err));
+  }), 1200);
+}
+
+const originalSetItem = Storage.prototype.setItem;
+Storage.prototype.setItem = function(key, value){
+  originalSetItem.call(this, key, value);
+  if(this === localStorage && key === CORE_KEY) scheduleUpload();
+};
+
+async function initialMerge(user){
+  const ref = dataRef(user);
+  const snap = await getDoc(ref);
+  const local = readLocal();
+  if(!snap.exists()){
+    if(local) await uploadLocal("primo salvataggio");
+    else setStatus("Accesso eseguito · nessun dato da sincronizzare");
+    return;
+  }
+  const remote = snap.data()?.payload;
+  if(!remote){ if(local) await uploadLocal("ripristino cloud"); return; }
+  if(!local || localTime(remote) > localTime(local)){
+    applyingRemote = true;
+    originalSetItem.call(localStorage, CORE_KEY, JSON.stringify(remote));
+    applyingRemote = false;
+    setStatus("Dati cloud scaricati. Aggiornamento dell’app…");
+    setTimeout(() => location.reload(), 500);
+  } else if(localTime(local) > localTime(remote)){
+    await uploadLocal("dati locali più recenti");
+  } else {
+    setStatus("Dati aggiornati su questo dispositivo");
+  }
+}
+
+function startRealtime(user){
+  unsubscribeSnapshot?.();
+  unsubscribeSnapshot = onSnapshot(dataRef(user), snap => {
+    if(!snap.exists() || applyingRemote) return;
+    const remote = snap.data()?.payload;
+    const local = readLocal();
+    if(!remote) return;
+    if(remote.updatedAt && remote.updatedAt === lastUploadedUpdatedAt) return;
+    if(!local || localTime(remote) > localTime(local)){
+      applyingRemote = true;
+      originalSetItem.call(localStorage, CORE_KEY, JSON.stringify(remote));
+      applyingRemote = false;
+      setStatus("Aggiornamento ricevuto da un altro dispositivo. Ricarico…");
+      setTimeout(() => location.reload(), 700);
+    }
+  }, err => { console.error(err); setStatus("Ascolto cloud non disponibile: " + err.message); });
+}
+
+loginBtn.addEventListener("click", async () => {
+  try { await signInWithPopup(auth, provider); }
+  catch(err){
+    if(["auth/popup-blocked","auth/cancelled-popup-request","auth/operation-not-supported-in-this-environment"].includes(err.code)){
+      await signInWithRedirect(auth, provider);
+    } else { setStatus("Accesso non riuscito: " + err.message); }
+  }
+});
+logoutBtn.addEventListener("click", () => signOut(auth));
+syncBtn.addEventListener("click", () => uploadLocal("manuale").catch(err => setStatus("Errore: " + err.message)));
+
+getRedirectResult(auth).catch(err => setStatus("Accesso non riuscito: " + err.message));
+onAuthStateChanged(auth, async user => {
+  currentUser = user;
+  loginBtn.classList.toggle("hidden", !!user);
+  logoutBtn.classList.toggle("hidden", !user);
+  syncBtn.classList.toggle("hidden", !user);
+  if(!user){ unsubscribeSnapshot?.(); setStatus("Non connesso · i dati restano salvati solo su questo dispositivo"); return; }
+  setStatus(`Accesso: ${user.email || user.displayName || "account Google"} · controllo dati…`);
+  try { await initialMerge(user); startRealtime(user); }
+  catch(err){ console.error(err); setStatus("Firebase: " + (err.message || err)); }
+});
+</script>
+
 </body>
 </html>
