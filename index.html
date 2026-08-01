@@ -2106,9 +2106,34 @@ function formatSessionDate(session, includeTime = false) {
 }
 
 function getInventoryForSession(venue, sessionId) {
-  // Le quantità sono conservate nel Core Database, non più nelle vecchie
-  // chiavi localStorage separate. Questo mantiene export e cloud sync coerenti.
-  return sanitizeInventory(safeJsonRead(inventoryKey(venue, sessionId), {}));
+  // 1) La sessione attualmente aperta usa direttamente l'inventario già caricato.
+  // Evita discrepanze tra interfaccia, Core Database e dati appena sincronizzati.
+  if (venue === currentVenue && sessionId === currentSessionId && inventory && typeof inventory === "object") {
+    const current = sanitizeInventory(inventory);
+    if (Object.keys(current).length) return current;
+  }
+
+  // 2) Lettura diretta dalla struttura reale del Core Database.
+  try {
+    const core = CoreDB.exportData();
+    const stored = core?.inventories?.[venue]?.[sessionId];
+    const direct = stored?.data ?? stored?.inventory ?? stored;
+    const clean = sanitizeInventory(direct);
+    if (Object.keys(clean).length) return clean;
+  } catch (error) {
+    console.warn("8Manager: lettura diretta inventario non riuscita", error);
+  }
+
+  // 3) Compatibilità con il router CoreDB e con eventuali sessioni migrate.
+  const routed = sanitizeInventory(safeJsonRead(inventoryKey(venue, sessionId), {}));
+  if (Object.keys(routed).length) return routed;
+
+  // 4) Compatibilità con vecchi salvataggi locali precedenti al Core Database.
+  try {
+    return sanitizeInventory(JSON.parse(localStorage.getItem(inventoryKey(venue, sessionId)) || "{}"));
+  } catch (_) {
+    return {};
+  }
 }
 
 function sessionDateKey(session) {
@@ -2429,6 +2454,12 @@ async function buildExcel(mode) {
     return;
   }
 
+  const inventoriesForExport = new Map(columns.map(session => [session.id, getInventoryForSession(currentVenue, session.id)]));
+  const quantityCount = [...inventoriesForExport.values()].reduce((total, values) => total + Object.keys(values).length, 0);
+  if (!quantityCount) {
+    throw new Error("La sessione selezionata non contiene quantità leggibili. Aprila, verifica che i valori siano visibili e sincronizza nuovamente prima di esportare.");
+  }
+
   const zip = await JSZip.loadAsync(base64ToUint8Array(TEMPLATES[currentVenue]));
   const sheetPaths = await getWorkbookSheetPaths(zip);
   const productsBySheet = {};
@@ -2476,7 +2507,10 @@ async function buildExcel(mode) {
     });
 
     columns.forEach((session, index) => {
-      const colNumber = originalMaxCol + index + 1;
+      // Le colonne di inventario partono sempre da B. Nei template ufficiali
+      // possono esistere celle vuote formattate più a destra: usarne il massimo
+      // nascondeva le quantità in colonne lontane e faceva sembrare il file vuoto.
+      const colNumber = 2 + index;
       const colLetter = numberToCol(colNumber);
       const headerRow = getOrCreateRow(doc, sheetData, 1);
       const headerStyle = getStyleForRow(headerRow);
@@ -2489,7 +2523,7 @@ async function buildExcel(mode) {
         headerStyle
       );
 
-      const sessionInventory = getInventoryForSession(currentVenue, session.id);
+      const sessionInventory = inventoriesForExport.get(session.id) || {};
       products.forEach(product => {
         const productRow = getOrCreateRow(doc, sheetData, product.exportRow);
         const rowStyle = getStyleForRow(productRow) || templateStyle;
@@ -2504,7 +2538,7 @@ async function buildExcel(mode) {
       });
     });
 
-    updateDimension(doc, originalMaxCol + columns.length, maxRow);
+    updateDimension(doc, Math.max(originalMaxCol, 1 + columns.length), maxRow);
     const serialized = new XMLSerializer().serializeToString(doc);
     zip.file(path, serialized);
   }
@@ -3220,7 +3254,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 </style>
 <div id="cloudSyncCard">
   <div>
-    <div class="cloud-title">☁️ Sincronizzazione cloud · v6.2.2</div>
+    <div class="cloud-title">☁️ Sincronizzazione cloud · v6.2.3</div>
     <div id="cloudSyncStatus" class="cloud-meta">Connessione a Firebase…</div>
   </div>
   <div id="cloudSyncActions">
