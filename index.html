@@ -3257,28 +3257,35 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 </script>
 
-<!-- 8Manager Cloud Sync v6.2 -->
+<script>
+Object.assign(window,{safeJsonRead,safeJsonWrite,sessionsKey,inventoryKey,sanitizeInventory});
+Object.defineProperties(window,{currentVenue:{get:()=>currentVenue},currentSessionId:{get:()=>currentSessionId}});
+</script>
+<!-- 8Manager Manual Session Cloud Sync v6.3.1 -->
 <style>
-#cloudSyncCard{max-width:980px;margin:12px auto;padding:14px 16px;background:#fff;border-radius:14px;box-shadow:0 3px 16px #00000012;display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+#cloudSyncCard{max-width:980px;margin:12px auto;padding:14px 16px;background:#fff;border-radius:14px;box-shadow:0 3px 16px #00000012;display:grid;gap:12px}
 #cloudSyncCard .cloud-title{font-weight:900;color:#173a59}.cloud-meta{font-size:13px;color:#607080;margin-top:3px}
-#cloudSyncActions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}#cloudSyncActions button{width:auto;padding:9px 12px}
-@media(max-width:680px){#cloudSyncCard{grid-template-columns:1fr}#cloudSyncActions{justify-content:stretch}#cloudSyncActions button{flex:1}}
+#cloudSyncActions{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}#cloudSyncActions button,#cloudSessionSelect{width:100%;padding:10px}
+@media(max-width:760px){#cloudSyncActions{grid-template-columns:1fr 1fr}}@media(max-width:480px){#cloudSyncActions{grid-template-columns:1fr}}
 </style>
 <div id="cloudSyncCard">
   <div>
-    <div class="cloud-title">☁️ Sincronizzazione cloud · v6.2.3</div>
-    <div id="cloudSyncStatus" class="cloud-meta">Connessione a Firebase…</div>
+    <div class="cloud-title">☁️ Archivio sessioni manuale · v6.3.1</div>
+    <div id="cloudSyncStatus" class="cloud-meta">Accedi per caricare o scaricare singole sessioni. Nessuna sincronizzazione automatica.</div>
   </div>
+  <select id="cloudSessionSelect" class="hidden" aria-label="Sessioni disponibili nel cloud"><option value="">Aggiorna l’elenco delle sessioni cloud</option></select>
   <div id="cloudSyncActions">
     <button id="cloudLoginButton" class="primary">Accedi con Google</button>
-    <button id="cloudSyncNowButton" class="success hidden">Sincronizza ora</button>
+    <button id="cloudUploadSessionButton" class="success hidden">Carica sessione aperta</button>
+    <button id="cloudRefreshButton" class="hidden">Aggiorna elenco cloud</button>
+    <button id="cloudDownloadButton" class="primary hidden">Scarica selezionata</button>
     <button id="cloudLogoutButton" class="hidden">Esci</button>
   </div>
 </div>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signInWithRedirect, getRedirectResult, signOut } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyC744nNVr08X1UXV0IZ_ycSA0JXUxCRVFE",
@@ -3288,130 +3295,108 @@ const firebaseConfig = {
   messagingSenderId: "942635146015",
   appId: "1:942635146015:web:1ce78a73a6988d1769ae2a"
 };
-
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+const cloudDb = getFirestore(app);
 const provider = new GoogleAuthProvider();
-provider.setCustomParameters({ prompt: "select_account" });
+provider.setCustomParameters({prompt:"select_account"});
 
-const CORE_KEY = "8manager-core-db-v1";
-const statusEl = document.getElementById("cloudSyncStatus");
-const loginBtn = document.getElementById("cloudLoginButton");
-const logoutBtn = document.getElementById("cloudLogoutButton");
-const syncBtn = document.getElementById("cloudSyncNowButton");
-let currentUser = null;
-let unsubscribeSnapshot = null;
-let uploadTimer = null;
-let applyingRemote = false;
-let lastUploadedUpdatedAt = null;
+const statusEl=document.getElementById("cloudSyncStatus");
+const loginBtn=document.getElementById("cloudLoginButton");
+const logoutBtn=document.getElementById("cloudLogoutButton");
+const uploadBtn=document.getElementById("cloudUploadSessionButton");
+const refreshBtn=document.getElementById("cloudRefreshButton");
+const downloadBtn=document.getElementById("cloudDownloadButton");
+const selectEl=document.getElementById("cloudSessionSelect");
+let currentUser=null;
+let cloudRows=new Map();
+const setStatus=t=>statusEl.textContent=t;
+const sessionRef=(u,id)=>doc(cloudDb,"users",u.uid,"sessions",id);
+const sessionsRef=u=>collection(cloudDb,"users",u.uid,"sessions");
 
-function setStatus(text){ statusEl.textContent = text; }
-function readLocal(){
-  try { return JSON.parse(localStorage.getItem(CORE_KEY) || "null"); }
-  catch { return null; }
+function activeSessionBundle(){
+  if(!window.currentVenue || !window.currentSessionId) return null;
+  const list=window.safeJsonRead(window.sessionsKey(window.currentVenue),[]);
+  const session=Array.isArray(list)?list.find(x=>x.id===window.currentSessionId):null;
+  if(!session) return null;
+  const inventory=window.sanitizeInventory(window.safeJsonRead(window.inventoryKey(window.currentVenue,session.id),{}));
+  return {session:{...session},inventory,venue:window.currentVenue,exportedAt:new Date().toISOString(),schemaVersion:1};
 }
-function localTime(payload){ return Date.parse(payload?.updatedAt || 0) || 0; }
-function dataRef(user){ return doc(db, "users", user.uid, "app", "state"); }
 
-async function uploadLocal(reason="automatico"){
-  if(!currentUser || applyingRemote) return;
-  const payload = readLocal();
-  if(!payload) return;
-  const bytes = new Blob([JSON.stringify(payload)]).size;
-  if(bytes > 900000){
-    setStatus("Sincronizzazione sospesa: database locale troppo grande (oltre 900 KB).");
-    return;
+async function uploadActiveSession(){
+  if(!currentUser) return;
+  const bundle=activeSessionBundle();
+  if(!bundle){setStatus("Apri prima la sessione che vuoi caricare.");return;}
+  if(bundle.session.status!=="closed" && !bundle.session.locked){
+    setStatus("Per sicurezza puoi caricare solo una sessione chiusa e bloccata.");return;
   }
-  setStatus("Salvataggio cloud in corso…");
-  await setDoc(dataRef(currentUser), {
-    payload,
-    schemaVersion: payload.schemaVersion || 1,
-    updatedAt: payload.updatedAt || new Date().toISOString(),
-    updatedBy: currentUser.email || currentUser.uid,
-    serverUpdatedAt: serverTimestamp()
-  });
-  lastUploadedUpdatedAt = payload.updatedAt || null;
-  setStatus(`Sincronizzato (${reason}) · ${new Date().toLocaleTimeString("it-IT")}`);
-}
-
-function scheduleUpload(){
-  if(!currentUser || applyingRemote) return;
-  clearTimeout(uploadTimer);
-  uploadTimer = setTimeout(() => uploadLocal("automatico").catch(err => {
-    console.error(err); setStatus("Errore di sincronizzazione: " + (err.message || err));
-  }), 1200);
-}
-
-const originalSetItem = Storage.prototype.setItem;
-Storage.prototype.setItem = function(key, value){
-  originalSetItem.call(this, key, value);
-  if(this === localStorage && key === CORE_KEY) scheduleUpload();
-};
-
-async function initialMerge(user){
-  const ref = dataRef(user);
-  const snap = await getDoc(ref);
-  const local = readLocal();
-  if(!snap.exists()){
-    if(local) await uploadLocal("primo salvataggio");
-    else setStatus("Accesso eseguito · nessun dato da sincronizzare");
-    return;
-  }
-  const remote = snap.data()?.payload;
-  if(!remote){ if(local) await uploadLocal("ripristino cloud"); return; }
-  if(!local || localTime(remote) > localTime(local)){
-    applyingRemote = true;
-    originalSetItem.call(localStorage, CORE_KEY, JSON.stringify(remote));
-    applyingRemote = false;
-    setStatus("Dati cloud scaricati. Aggiornamento dell’app…");
-    setTimeout(() => location.reload(), 500);
-  } else if(localTime(local) > localTime(remote)){
-    await uploadLocal("dati locali più recenti");
-  } else {
-    setStatus("Dati aggiornati su questo dispositivo");
-  }
-}
-
-function startRealtime(user){
-  unsubscribeSnapshot?.();
-  unsubscribeSnapshot = onSnapshot(dataRef(user), snap => {
-    if(!snap.exists() || applyingRemote) return;
-    const remote = snap.data()?.payload;
-    const local = readLocal();
-    if(!remote) return;
-    if(remote.updatedAt && remote.updatedAt === lastUploadedUpdatedAt) return;
-    if(!local || localTime(remote) > localTime(local)){
-      applyingRemote = true;
-      originalSetItem.call(localStorage, CORE_KEY, JSON.stringify(remote));
-      applyingRemote = false;
-      setStatus("Aggiornamento ricevuto da un altro dispositivo. Ricarico…");
-      setTimeout(() => location.reload(), 700);
+  const ref=sessionRef(currentUser,bundle.session.id);
+  const existing=await getDoc(ref);
+  if(existing.exists()){
+    const old=existing.data()?.bundle;
+    const oldTime=Date.parse(old?.session?.updatedAt||old?.session?.closedAt||old?.exportedAt||0)||0;
+    const newTime=Date.parse(bundle.session.updatedAt||bundle.session.closedAt||bundle.exportedAt)||0;
+    if(newTime<=oldTime && !confirm("Nel cloud esiste già questa sessione con una versione uguale o più recente. Vuoi sostituirla comunque?")){
+      setStatus("Caricamento annullato: la copia cloud non è stata modificata.");return;
     }
-  }, err => { console.error(err); setStatus("Ascolto cloud non disponibile: " + err.message); });
+  }
+  setStatus("Caricamento della sessione in corso…");
+  await setDoc(ref,{bundle,updatedBy:currentUser.email||currentUser.uid,serverUpdatedAt:serverTimestamp()});
+  setStatus(`Sessione “${bundle.session.name}” caricata nel cloud.`);
+  await refreshCloudList();
 }
 
-loginBtn.addEventListener("click", async () => {
-  try { await signInWithPopup(auth, provider); }
-  catch(err){
-    if(["auth/popup-blocked","auth/cancelled-popup-request","auth/operation-not-supported-in-this-environment"].includes(err.code)){
-      await signInWithRedirect(auth, provider);
-    } else { setStatus("Accesso non riuscito: " + err.message); }
-  }
-});
-logoutBtn.addEventListener("click", () => signOut(auth));
-syncBtn.addEventListener("click", () => uploadLocal("manuale").catch(err => setStatus("Errore: " + err.message)));
+async function refreshCloudList(){
+  if(!currentUser)return;
+  setStatus("Lettura archivio cloud…");
+  const snap=await getDocs(sessionsRef(currentUser));
+  cloudRows.clear();
+  const rows=[];
+  snap.forEach(d=>{const b=d.data()?.bundle;if(b?.session){cloudRows.set(d.id,b);rows.push(b);}});
+  rows.sort((a,b)=>Date.parse(b.session.createdAt||0)-Date.parse(a.session.createdAt||0));
+  selectEl.innerHTML='<option value="">Seleziona una sessione cloud ('+rows.length+')</option>'+rows.map(b=>{
+    const label=`${b.venue==='8lab'?'8LABistrot':'PAN8'} · ${b.session.name} · ${new Date(b.session.createdAt).toLocaleString('it-IT')}`;
+    return `<option value="${String(b.session.id).replace(/"/g,'&quot;')}">${label.replace(/</g,'&lt;')}</option>`;
+  }).join('');
+  selectEl.classList.remove("hidden");
+  setStatus(rows.length?`${rows.length} sessioni disponibili nel cloud. Selezionane una per scaricarla.`:"Nessuna sessione presente nel cloud.");
+}
 
-getRedirectResult(auth).catch(err => setStatus("Accesso non riuscito: " + err.message));
-onAuthStateChanged(auth, async user => {
-  currentUser = user;
-  loginBtn.classList.toggle("hidden", !!user);
-  logoutBtn.classList.toggle("hidden", !user);
-  syncBtn.classList.toggle("hidden", !user);
-  if(!user){ unsubscribeSnapshot?.(); setStatus("Non connesso · i dati restano salvati solo su questo dispositivo"); return; }
-  setStatus(`Accesso: ${user.email || user.displayName || "account Google"} · controllo dati…`);
-  try { await initialMerge(user); startRealtime(user); }
-  catch(err){ console.error(err); setStatus("Firebase: " + (err.message || err)); }
+async function downloadSelected(){
+  const id=selectEl.value;
+  const bundle=cloudRows.get(id);
+  if(!bundle){setStatus("Seleziona una sessione dall’elenco.");return;}
+  const venue=bundle.venue;
+  const key=window.sessionsKey(venue);
+  const local=window.safeJsonRead(key,[]);
+  const list=Array.isArray(local)?local:[];
+  const existing=list.find(x=>x.id===bundle.session.id);
+  let imported={...bundle.session};
+  if(existing){
+    const same=JSON.stringify(existing)===JSON.stringify(bundle.session) && JSON.stringify(window.safeJsonRead(window.inventoryKey(venue,existing.id),{}))===JSON.stringify(bundle.inventory||{});
+    if(same){setStatus("Questa sessione è già presente e identica sul dispositivo.");return;}
+    const choice=confirm("Sul dispositivo esiste già una sessione con lo stesso ID. OK crea una copia separata; Annulla non modifica nulla.");
+    if(!choice){setStatus("Download annullato: nessun dato locale è stato sostituito.");return;}
+    imported={...imported,id:bundle.session.id+"-copy-"+Date.now(),name:bundle.session.name+" (copia cloud)"};
+  }
+  list.unshift(imported);
+  window.safeJsonWrite(key,list);
+  window.safeJsonWrite(window.inventoryKey(venue,imported.id),bundle.inventory||{});
+  setStatus(`Sessione “${imported.name}” scaricata. Apri il locale ${venue==='8lab'?'8LABistrot':'PAN8'} per visualizzarla.`);
+}
+
+loginBtn.addEventListener("click",async()=>{try{await signInWithPopup(auth,provider)}catch(err){if(["auth/popup-blocked","auth/cancelled-popup-request","auth/operation-not-supported-in-this-environment"].includes(err.code))await signInWithRedirect(auth,provider);else setStatus("Accesso non riuscito: "+err.message)}});
+logoutBtn.addEventListener("click",()=>signOut(auth));
+uploadBtn.addEventListener("click",()=>uploadActiveSession().catch(e=>setStatus("Errore caricamento: "+e.message)));
+refreshBtn.addEventListener("click",()=>refreshCloudList().catch(e=>setStatus("Errore lettura cloud: "+e.message)));
+downloadBtn.addEventListener("click",()=>downloadSelected().catch(e=>setStatus("Errore download: "+e.message)));
+getRedirectResult(auth).catch(e=>setStatus("Accesso non riuscito: "+e.message));
+onAuthStateChanged(auth,user=>{
+  currentUser=user;
+  loginBtn.classList.toggle("hidden",!!user);logoutBtn.classList.toggle("hidden",!user);uploadBtn.classList.toggle("hidden",!user);refreshBtn.classList.toggle("hidden",!user);downloadBtn.classList.toggle("hidden",!user);selectEl.classList.toggle("hidden",!user);
+  if(!user){cloudRows.clear();setStatus("Non connesso. I dati restano soltanto su questo dispositivo finché non scegli di caricare una sessione.");return;}
+  setStatus(`Accesso: ${user.email||user.displayName}. Nessuna sincronizzazione automatica è attiva.`);
+  refreshCloudList().catch(e=>setStatus("Errore lettura cloud: "+e.message));
 });
 </script>
 
