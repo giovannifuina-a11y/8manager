@@ -247,6 +247,15 @@ h1, h2 { margin-top: 0; }
 .voice-correction-selected { margin-top:10px; padding:10px; border-radius:10px; background:#eef7ff; }
 @media(max-width:620px){ .voice-event{grid-template-columns:auto 1fr}.voice-event button{grid-column:2;width:100%;} }
 
+
+.version-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.version-channel{display:inline-block;padding:2px 7px;border-radius:999px;background:#fff3cd;color:#664d03;font-size:11px;font-weight:900}
+.update-banner{position:sticky;top:70px;z-index:9;max-width:980px;margin:8px auto;padding:10px 16px;background:#fff3cd;border:1px solid #e3c86f;border-radius:12px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.update-banner.hidden{display:none}.update-banner button{width:auto;padding:8px 12px}
+.vocab-list{max-height:280px;overflow:auto;border:1px solid #dbe3ea;border-radius:12px;background:#fff}
+.vocab-row{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:center;padding:10px;border-bottom:1px solid #e5e9ef}.vocab-row:last-child{border-bottom:0}.vocab-row button{width:auto;padding:7px 10px}
+.diagnostics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}.diagnostic-item{background:#f4f7fb;border-radius:12px;padding:12px}.diagnostic-item strong{display:block;font-size:1.08rem}.diagnostic-item small{display:block;color:#607080;margin-top:3px}
+@media(max-width:620px){.vocab-row{grid-template-columns:1fr auto}.vocab-row .vocab-product{grid-column:1/-1}.update-banner{margin:8px 12px;top:66px}}
 </style>
 <!-- JSZip incorporato: importazione/esportazione XLSX offline anche da cellulare -->
 <script>
@@ -268,8 +277,39 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 <link rel="manifest" href="manifest.webmanifest?v=624">
 <meta name="theme-color" content="#1f4e78">
 <script>
-if('serviceWorker' in navigator){
-window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js?v=624', { updateViaCache: 'none' }).then(r => r.update()).catch(console.error));
+const APP_META = Object.freeze({
+  name: "8Manager",
+  version: "6.4.1",
+  build: "20260802-001",
+  label: "UX Vocale Continua",
+  channel: "TEST"
+});
+window.APP_META = APP_META;
+let pendingServiceWorker = null;
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      const registration = await navigator.serviceWorker.register('./sw.js?v=' + APP_META.build, { updateViaCache: 'none' });
+      await registration.update();
+      if (registration.waiting) {
+        pendingServiceWorker = registration.waiting;
+        window.dispatchEvent(new CustomEvent('8manager-update-ready'));
+      }
+      registration.addEventListener('updatefound', () => {
+        const worker = registration.installing;
+        if (!worker) return;
+        worker.addEventListener('statechange', () => {
+          if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+            pendingServiceWorker = worker;
+            window.dispatchEvent(new CustomEvent('8manager-update-ready'));
+          }
+        });
+      });
+      navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
+    } catch (error) {
+      console.error('Service worker non disponibile', error);
+    }
+  });
 }
 </script>
 </head>
@@ -278,11 +318,15 @@ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js?v=6
   <div class="header-row">
     <div>
       <strong>8Manager</strong>
-      <small>Versione 6.2.4 · Export Excel colonna B</small>
+      <small id="headerVersion" class="version-line"></small>
     </div>
     <button id="homeButton" class="ghost hidden">Home</button>
   </div>
 </header>
+<div id="updateBanner" class="update-banner hidden" role="status">
+  <div><strong>Aggiornamento disponibile</strong><div class="muted">Salva prima eventuali modifiche, poi aggiorna 8Manager.</div></div>
+  <button id="applyUpdateButton" class="warning">Aggiorna adesso</button>
+</div>
 
 <main>
   <section id="homeScreen" class="screen active">
@@ -538,6 +582,18 @@ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js?v=6
         </div>
         <span></span>
       </div>
+      <div class="product-row">
+        <div>
+          <strong>Vocabolario personale</strong>
+          <div class="muted">Correzioni imparate dalla timeline vocale. Puoi controllarle o eliminarle senza modificare il catalogo.</div>
+        </div>
+        <div class="product-actions">
+          <button id="refreshVocabularyButton">Aggiorna elenco</button>
+          <button id="clearVocabularyButton" class="danger">Cancella tutto</button>
+        </div>
+        <span></span>
+      </div>
+      <div id="personalVocabularyList" class="vocab-list"><div class="empty">Nessuna correzione appresa.</div></div>
       <div id="databaseStatus" class="notice">Database interno pronto.</div>
       <div class="product-row">
         <div>
@@ -556,22 +612,21 @@ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js?v=6
 
   <section id="projectScreen" class="screen">
     <div class="card">
-      <h2>Versione 6.0 — Session Engine</h2>
+      <h2 id="projectVersionTitle">8Manager</h2>
       <div class="badges">
-        <span class="badge">Catalogo Excel versionato</span>
-        <span class="badge">Anteprima modifiche</span>
-        <span class="badge">Fotografia Excel</span>
-        <span class="badge">Storico Excel</span>
-        <span class="badge">Fogli per fornitore</span>
-        <span class="badge">Sincronizzazione Excel sicura</span>
-        <span class="badge">Nuovi fornitori automatici</span>
-        <span class="badge">Date in colonne</span>
-        <span class="badge">Conferma vocale ON/OFF</span>
-        <span class="badge">Inventario Turbo ON/OFF</span>
-        <span class="badge">Annullamento vocale</span>
+        <span class="badge">Core stabile</span>
+        <span class="badge">UX vocale continua</span>
+        <span class="badge">Timeline non bloccante</span>
+        <span class="badge">Correzione con suggerimenti</span>
+        <span class="badge">Vocabolario personale</span>
+        <span class="badge">Sync manuale sicura</span>
       </div>
-      <p>Questa versione separa definitivamente template e catalogo. Puoi vedere le modifiche effettuate nell’app, esportare il catalogo aggiornato di PAN8 o 8LABistrot, creare automaticamente i fogli dei nuovi fornitori e mantenere una versione progressiva del catalogo.</p>
-      <p class="muted">I documenti completi sono inclusi nello ZIP.</p>
+      <p>Questa build concentra le modifiche sulla UX dell’inventario. Catalogo, sessioni, sincronizzazione ed Excel restano nel Core e non vengono alterati da questa patch.</p>
+    </div>
+    <div class="card">
+      <h2>Diagnostica</h2>
+      <div id="diagnosticsGrid" class="diagnostics-grid"></div>
+      <div class="two" style="margin-top:12px"><button id="refreshDiagnosticsButton">Aggiorna diagnostica</button></div>
     </div>
   </section>
 </main>
@@ -852,6 +907,66 @@ let showInactiveProducts = false;
 
 const el = id => document.getElementById(id);
 
+function applyAppMetadata() {
+  const meta = window.APP_META || {version:"?",build:"?",label:"",channel:""};
+  const header = el("headerVersion");
+  if (header) header.innerHTML = `<span>Versione ${escapeHtml(meta.version)} · ${escapeHtml(meta.label)}</span><span class="version-channel">${escapeHtml(meta.channel)}</span>`;
+  const projectTitle = el("projectVersionTitle");
+  if (projectTitle) projectTitle.textContent = `${meta.name} ${meta.version} — ${meta.label}`;
+  const cloudTitle = el("cloudVersionTitle");
+  if (cloudTitle) cloudTitle.textContent = `☁️ Archivio sessioni manuale · v${meta.version}`;
+  document.title = `${meta.name} ${meta.version}`;
+}
+
+function learnedVocabularyRows() {
+  return Object.entries(voiceAliases || {}).map(([key, productId]) => {
+    const split = key.indexOf("|");
+    const venue = split >= 0 ? key.slice(0, split) : "";
+    const phrase = split >= 0 ? key.slice(split + 1) : key;
+    const product = (DATA[venue] || []).find(item => item.id === productId);
+    return {key, venue, phrase, productId, productName: product?.name || "Prodotto non disponibile"};
+  }).sort((a,b) => a.venue.localeCompare(b.venue) || a.phrase.localeCompare(b.phrase, "it"));
+}
+
+function renderPersonalVocabulary() {
+  const box = el("personalVocabularyList");
+  if (!box) return;
+  const rows = learnedVocabularyRows();
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty">Nessuna correzione appresa.</div>';
+    return;
+  }
+  box.innerHTML = rows.map(row => `<div class="vocab-row"><div><strong>${escapeHtml(row.phrase)}</strong><small class="muted">${row.venue === "8lab" ? "8LABistrot" : "PAN8"}</small></div><div class="vocab-product">→ ${escapeHtml(row.productName)}</div><button class="danger delete-vocab" data-key="${escapeHtml(row.key)}">Elimina</button></div>`).join("");
+  box.querySelectorAll(".delete-vocab").forEach(button => button.addEventListener("click", () => {
+    delete voiceAliases[button.dataset.key];
+    saveVoiceAliases();
+    renderPersonalVocabulary();
+  }));
+}
+
+function renderDiagnostics() {
+  const box = el("diagnosticsGrid");
+  if (!box) return;
+  let db = {};
+  try { db = JSON.parse(localStorage.getItem(CORE_DB_KEY) || "{}"); } catch {}
+  const coreSessions = Object.values(db.sessions || {}).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
+  const legacySessions = ["pan8","8lab"].reduce((sum, venue) => sum + safeJsonRead(sessionsKey(venue), []).length, 0);
+  const productCount = (DATA.pan8?.length || 0) + (DATA["8lab"]?.length || 0);
+  const meta = window.APP_META || {};
+  const swState = navigator.serviceWorker?.controller ? "Attivo" : ("serviceWorker" in navigator ? "Registrazione in corso" : "Non supportato");
+  const values = [
+    ["Versione", meta.version || "?", `Build ${meta.build || "?"}`],
+    ["Canale", meta.channel || "?", meta.label || ""],
+    ["Connessione", navigator.onLine ? "Online" : "Offline", "Stato del browser"],
+    ["PWA cache", swState, "Service worker"],
+    ["Prodotti", String(productCount), "PAN8 + 8LABistrot"],
+    ["Sessioni", String(Math.max(coreSessions, legacySessions)), "Dati locali rilevati"],
+    ["Vocabolario", String(learnedVocabularyRows().length), "Correzioni apprese"],
+    ["Database", localStorage.getItem(CORE_DB_KEY) ? "Presente" : "Non inizializzato", CORE_DB_KEY]
+  ];
+  box.innerHTML = values.map(([label,value,detail]) => `<div class="diagnostic-item"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></div>`).join("");
+}
+
 function normalizeText(text) {
   return String(text || "")
     .toLowerCase()
@@ -873,6 +988,8 @@ function showScreen(id) {
   el(id).classList.add("active");
   currentScreen = id;
   el("homeButton").classList.toggle("hidden", id === "homeScreen");
+  if (id === "settingsScreen") renderPersonalVocabulary();
+  if (id === "projectScreen") renderDiagnostics();
 }
 
 document.querySelectorAll("[data-screen]").forEach(button => {
@@ -1888,6 +2005,7 @@ function chooseProductForVoiceCorrection(transcribedPhrase) {
 }
 
 loadVoiceAliases();
+applyAppMetadata();
 
 function isUndoVoiceCommand(text) {
   const command = normalizeText(text);
@@ -3148,6 +3266,24 @@ if (!SpeechRecognition) {
 
 
 
+el("refreshVocabularyButton")?.addEventListener("click", renderPersonalVocabulary);
+el("clearVocabularyButton")?.addEventListener("click", () => {
+  const count = learnedVocabularyRows().length;
+  if (!count) return;
+  if (!confirm(`Eliminare tutte le ${count} correzioni apprese? Gli alias permanenti dei prodotti resteranno invariati.`)) return;
+  voiceAliases = {};
+  saveVoiceAliases();
+  renderPersonalVocabulary();
+});
+el("refreshDiagnosticsButton")?.addEventListener("click", renderDiagnostics);
+el("applyUpdateButton")?.addEventListener("click", () => {
+  if (pendingServiceWorker) pendingServiceWorker.postMessage({type:"SKIP_WAITING"});
+  else location.reload();
+});
+window.addEventListener("8manager-update-ready", () => el("updateBanner")?.classList.remove("hidden"));
+window.addEventListener("online", renderDiagnostics);
+window.addEventListener("offline", renderDiagnostics);
+
 el("voiceCorrectionSearch").addEventListener("input", renderVoiceCorrectionSuggestions);
 el("cancelVoiceCorrectionButton").addEventListener("click", closeVoiceCorrection);
 el("saveVoiceCorrectionButton").addEventListener("click", saveVoiceErrorCorrection);
@@ -3434,7 +3570,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 Object.assign(window,{safeJsonRead,safeJsonWrite,sessionsKey,inventoryKey,sanitizeInventory});
 Object.defineProperties(window,{currentVenue:{get:()=>currentVenue},currentSessionId:{get:()=>currentSessionId}});
 </script>
-<!-- 8Manager UX Vocale Continua v6.4 -->
+<!-- 8Manager UX Vocale Continua v6.4.1 -->
 <style>
 #cloudSyncCard{max-width:980px;margin:12px auto;padding:14px 16px;background:#fff;border-radius:14px;box-shadow:0 3px 16px #00000012;display:grid;gap:12px}
 #cloudSyncCard .cloud-title{font-weight:900;color:#173a59}.cloud-meta{font-size:13px;color:#607080;margin-top:3px}
@@ -3443,7 +3579,7 @@ Object.defineProperties(window,{currentVenue:{get:()=>currentVenue},currentSessi
 </style>
 <div id="cloudSyncCard">
   <div>
-    <div class="cloud-title">☁️ Archivio sessioni manuale · v6.4</div>
+    <div id="cloudVersionTitle" class="cloud-title">☁️ Archivio sessioni manuale</div>
     <div id="cloudSyncStatus" class="cloud-meta">Accedi per caricare o scaricare singole sessioni. Nessuna sincronizzazione automatica.</div>
   </div>
   <select id="cloudSessionSelect" class="hidden" aria-label="Sessioni disponibili nel cloud"><option value="">Aggiorna l’elenco delle sessioni cloud</option></select>
